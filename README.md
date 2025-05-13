@@ -1,26 +1,14 @@
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances
 from sentence_transformers import SentenceTransformer
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import SnowballStemmer
-from french_lefff_lemmatizer.french_lefff_lemmatizer import FrenchLefffLemmatizer
+import spacy
 
-# Download required NLTK resources
-nltk.download('stopwords')
-nltk.download('punkt')
+# Load French NLP model
+nlp = spacy.load("fr_core_news_sm")
 
-# Initialize French NLP tools
-stemmer = SnowballStemmer('french')
-lemmatizer = FrenchLefffLemmatizer()
-stop_words = set(stopwords.words('french'))
-
-# Add culinary-specific stop words if needed
-extra_stopwords = {'aux', 'à', 'la', 'le', 'de', 'du', 'des', 'avec'}
-stop_words.update(extra_stopwords)
-
-# Load sentence transformer model
+# Load French sentence embedding model
 model = SentenceTransformer('dangvantuan/sentence-camembert-base')
 
 # Sample DataFrame
@@ -31,16 +19,10 @@ data = {'plat': ["ratatouille + tajine aux artichauts + couscous",
                  "tarte aux poireaux + quiche lorraine + flamiche"]}
 df = pd.DataFrame(data)
 
+# Preprocessing function
 def preprocess(text):
-    # Tokenize and clean text
-    tokens = nltk.word_tokenize(text.lower(), language='french')
-    processed = []
-    for token in tokens:
-        if token.isalpha() and token not in stop_words:
-            # Use either lemmatization or stemming
-            lemma = lemmatizer.lemmatize(token)
-            processed.append(stemmer.stem(lemma))  # Combine both approaches
-    return ' '.join(processed)
+    doc = nlp(text.lower())
+    return " ".join([token.lemma_ for token in doc if not token.is_stop and token.is_alpha])
 
 # Extract and preprocess all dishes
 all_dishes = []
@@ -50,13 +32,18 @@ for row in df['plat']:
 
 unique_dishes = list(set(all_dishes))
 
-# Generate embeddings and cluster
+# Generate embeddings
 dish_embeddings = model.encode(unique_dishes)
+
+# Determine optimal clusters (simplified version)
 num_clusters = 5  # Adjust based on your data
+
+# Cluster dishes
 kmeans = KMeans(n_clusters=num_clusters, random_state=42)
 kmeans.fit(dish_embeddings)
+cluster_labels = kmeans.labels_
 
-# Get cluster names using TF-IDF
+# Create cluster to category mapping
 def get_cluster_names(dishes, labels, n_terms=3):
     from sklearn.feature_extraction.text import TfidfVectorizer
     cluster_names = {}
@@ -72,18 +59,26 @@ def get_cluster_names(dishes, labels, n_terms=3):
     
     return cluster_names
 
-category_mapping = get_cluster_names(unique_dishes, kmeans.labels_)
+category_mapping = get_cluster_names(unique_dishes, cluster_labels)
 
-# Categorization function
-def categorize_dish(dish):
-    clean_dish = preprocess(dish)
-    emb = model.encode([clean_dish])
-    return category_mapping[kmeans.predict(emb)[0]]
+# Function to categorize a new dish
+def categorize_dish(dish, preprocessed=False):
+    if not preprocessed:
+        dish = preprocess(dish)
+    emb = model.encode([dish])
+    cluster = kmeans.predict(emb)[0]
+    return category_mapping[cluster]
 
-# Process the dataframe
+# Process original DataFrame
 def process_row(row):
     dishes = [d.strip() for d in row.split('+')]
-    return ' + '.join([f"{d} ({categorize_dish(d)})" for d in dishes])
+    categorized = []
+    for dish in dishes:
+        original_dish = dish
+        clean_dish = preprocess(dish)
+        category = categorize_dish(clean_dish, preprocessed=True)
+        categorized.append(f"{original_dish} ({category})")
+    return ' + '.join(categorized)
 
 df['categorized_plat'] = df['plat'].apply(process_row)
 print(df[['plat', 'categorized_plat']])
