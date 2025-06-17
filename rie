@@ -1,0 +1,73 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+
+# Chargement des données
+ho = pd.read_csv('ho.csv', parse_dates=['date'])
+cantine = pd.read_csv('cantine.csv', parse_dates=['date'])
+menu = pd.read_csv('menu.csv', parse_dates=['date'])
+meteo = pd.read_csv('meteo.csv', parse_dates=['date'])
+
+# 1. Analyse des données de présence (ho.csv)
+print("===== HO.CSV =====")
+print(f"Période : {ho['date'].min()} to {ho['date'].max()}")
+print(f"Nombre de jours uniques : {ho['date'].nunique()}")
+print(f"Employés uniques : {ho['id'].nunique()}")
+print("\nRésumé statistique :\n", ho.describe(include='all'))
+
+# Distribution des présences par jour
+daily_ho = ho.groupby('date').agg(nb_employes=('id', 'count'))
+daily_ho['jour_semaine'] = daily_ho.index.day_name()
+
+plt.figure(figsize=(12, 6))
+sns.boxplot(data=daily_ho, x='jour_semaine', y='nb_employes', order=['Monday','Tuesday','Wednesday','Thursday','Friday'])
+plt.title('Présence des employés par jour de semaine')
+plt.show()
+
+# 2. Analyse de la cantine (cantine.csv)
+print("\n===== CANTINE.CSV =====")
+daily_cantine = cantine.groupby('date').agg(nb_repas=('id', 'count'))
+print(f"Taux de fréquentation moyen : {daily_cantine['nb_repas'].mean() / daily_ho['nb_employes'].mean():.2%}")
+
+# Fusion avec les présences
+attendance = daily_ho.merge(daily_cantine, on='date', how='left').fillna(0)
+attendance['taux_frequentation'] = attendance['nb_repas'] / attendance['nb_employes']
+
+# 3. Analyse des menus (menu.csv)
+print("\n===== MENU.CSV =====")
+menu['nombre_plats'] = menu['plat'].apply(lambda x: len(x.split('+')))
+print(f"Nombre moyen de plats/jour : {menu['nombre_plats'].mean():.1f}")
+
+# 4. Analyse météo (meteo.csv)
+print("\n===== METEO.CSV =====")
+print(meteo.describe())
+
+# 5. Fusion globale
+df = attendance.merge(meteo, on='date').merge(menu, on='date', suffixes=('', '_menu'))
+
+# 6. Corrélations
+corr_matrix = df[['nb_repas', 'température', 'vitesse vent', 'précipitation', 'nombre_plats']].corr()
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
+plt.title('Corrélations entre variables clés')
+plt.show()
+
+# 7. Impact de la météo sur la fréquentation
+plt.figure(figsize=(12, 4))
+plt.subplot(131)
+sns.scatterplot(data=df, x='température', y='taux_frequentation')
+plt.subplot(132)
+sns.boxplot(data=df, x='conditions', y='taux_frequentation')
+plt.xticks(rotation=45)
+plt.subplot(133)
+sns.scatterplot(data=df, x='précipitation', y='nb_repas')
+plt.tight_layout()
+plt.show()
+
+# 8. Impact des plats (exemple : longueur des noms = proxy de la diversité)
+df['longueur_description'] = df['plat'].apply(len)
+sns.lmplot(data=df, x='longueur_description', y='taux_frequentation', height=6)
+plt.title('Impact de la diversité des plats sur la fréquentation')
+plt.show()
