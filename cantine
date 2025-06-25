@@ -2,116 +2,209 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
 import calendar
-from statsmodels.tsa.seasonal import seasonal_decompose
+from matplotlib.dates import DateFormatter
 
 # Chargement des données
-df = pd.read_csv('cantine.txt', sep='\t', parse_dates=['date'])
+df = pd.read_csv('cantine.csv', parse_dates=['date'])
 
-# 1. Nettoyage et feature engineering
+# 1. Filtrage des jours pertinents (Lundi-Vendredi uniquement)
+valid_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+df = df[df['day_of_the_week'].isin(valid_days)].copy()
+
+# 2. Préparation des données
 df['jour'] = df['date'].dt.day
+df['annee'] = df['date'].dt.year
 df['saison'] = df['month'].apply(lambda m: (m%12 + 3)//3)  # 1:Hiver, 2:Printemps, 3:Été, 4:Automne
 
-# 2. Analyse des tendances principales
-daily_data = df.groupby('date').agg(
+# Ordre des jours de la semaine
+weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+weekday_fr = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi']
+
+# Agrégation quotidienne
+daily = df.groupby('date').agg(
     total_repas=('lunch', 'sum'),
     temperature_moy=('temperature', 'mean'),
     vent_moy=('vitesse du vent(km/h)', 'mean'),
-    conditions_meteo=('pluie', lambda x: 'Pluie' if x.sum() > 0 else ('Nuageux' if df['fortement nuageux'].sum() > 0 else 'Clair'))
+    pluie=('pluie', 'max'),
+    nuageux=('nuageux', 'max'),
+    fortement_nuageux=('fortement nuageux', 'max'),
+    clair=('clair', 'max'),
+    jour_semaine=('day_of_the_week', 'first')
 ).reset_index()
 
-# 3. Visualisations EDA
-plt.figure(figsize=(15, 10))
+# Conditions météo dominantes
+daily['meteo'] = 'Pluie'
+daily.loc[daily['clair'] == 1, 'meteo'] = 'Clair'
+daily.loc[(daily['nuageux'] == 1) & (daily['pluie'] == 0), 'meteo'] = 'Nuageux'
+daily.loc[(daily['fortement_nuageux'] == 1) & (daily['pluie'] == 0), 'meteo'] = 'Très nuageux'
 
-# Tendances temporelles
-plt.subplot(2, 2, 1)
-sns.lineplot(data=daily_data, x='date', y='total_repas')
-plt.title('Consommation quotidienne de repas')
-plt.grid(True)
+# 3. Analyse temporelle
+plt.figure(figsize=(16, 12))
+
+# Tendance annuelle
+ax1 = plt.subplot(2, 2, 1)
+sns.lineplot(data=daily, x='date', y='total_repas', hue='annee', palette='viridis', estimator=None)
+plt.title('Évolution de la fréquentation sur 3 ans (jours ouvrables)')
+plt.ylabel('Nombre de repas consommés')
+plt.xlabel('Date')
+date_form = DateFormatter("%Y-%m")
+ax1.xaxis.set_major_formatter(date_form)
+plt.grid(True, alpha=0.3)
 
 # Distribution par jour de semaine
-plt.subplot(2, 2, 2)
-weekday_order = list(calendar.day_name)[:5]  # Lundi à Vendredi
-sns.boxplot(data=df, x='day_of_the_week', y='lunch', order=weekday_order)
+ax2 = plt.subplot(2, 2, 2)
+sns.boxplot(data=df, x='day_of_the_week', y='lunch', order=weekday_order, palette='Blues')
 plt.title('Fréquentation par jour de semaine')
 plt.ylabel('Probabilité de présence')
+plt.xlabel('Jour de la semaine')
+plt.xticks(range(5), weekday_fr)
+plt.grid(True, axis='y', alpha=0.3)
 
-# Impact météorologique
-plt.subplot(2, 2, 3)
-sns.scatterplot(data=daily_data, x='temperature_moy', y='total_repas', hue='conditions_meteo')
-plt.title('Impact de la météo sur la fréquentation')
+# Distribution mensuelle
+ax3 = plt.subplot(2, 2, 3)
+sns.boxplot(data=df, x='month', y='lunch', palette='coolwarm')
+plt.title('Fréquentation moyenne par mois')
+plt.ylabel('Probabilité de présence')
+plt.xlabel('Mois')
+plt.xticks(range(0,12), ['Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sep','Oct','Nov','Déc'])
+plt.grid(True, axis='y', alpha=0.3)
 
-# Analyse saisonnière
-plt.subplot(2, 2, 4)
-sns.barplot(data=df.groupby(['saison', 'month']).lunch.mean().reset_index(), 
-            x='saison', y='lunch', ci=None)
+# Comparaison saisonnière
+ax4 = plt.subplot(2, 2, 4)
+saison_labels = ['Hiver', 'Printemps', 'Été', 'Automne']
+sns.barplot(data=df, x='saison', y='lunch', palette='viridis', ci=None, 
+            order=[1,2,3,4])
 plt.title('Fréquentation moyenne par saison')
-plt.xticks([0,1,2,3], ['Hiver', 'Printemps', 'Été', 'Automne'])
+plt.xticks([0,1,2,3], saison_labels)
 plt.ylabel('Taux de présence moyen')
+plt.xlabel('Saison')
+plt.grid(True, axis='y', alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('cantine_eda.png', dpi=300)
+plt.savefig('tendance_temporelle.png', dpi=300)
 plt.show()
 
-# 4. Décomposition des séries temporelles
-result = seasonal_decompose(daily_data.set_index('date')['total_repas'], model='additive', period=5)
-result.plot()
-plt.savefig('decomposition_temporelle.png', dpi=300)
+# 4. Analyse par jour de la semaine et météo
+plt.figure(figsize=(16, 10))
 
-# 5. Préparation des données pour modélisation
-X = daily_data[['temperature_moy', 'vent_moy']]
-X = pd.concat([X, pd.get_dummies(daily_data['date'].dt.dayofweek, prefix='jour')], axis=1)
-X = pd.concat([X, pd.get_dummies(daily_data['date'].dt.month, prefix='mois')], axis=1)
-y = daily_data['total_repas']
-
-# 6. Modélisation
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-model = make_pipeline(
-    StandardScaler(),
-    RandomForestRegressor(n_estimators=150, max_depth=8, random_state=42)
-)
-model.fit(X_train, y_train)
-
-# 7. Évaluation
-predictions = model.predict(X_test)
-mae = mean_absolute_error(y_test, predictions)
-r2 = r2_score(y_test, predictions)
-
-print(f"Performance du modèle:\nMAE: {mae:.2f}\nR²: {r2:.4f}")
-
-# 8. Visualisation des prédictions
-plt.figure(figsize=(12, 6))
-plt.plot(y_test.index, y_test.values, label='Réel', linewidth=2)
-plt.plot(y_test.index, predictions, label='Prédiction', linestyle='--')
-plt.fill_between(y_test.index, 
-                predictions - mae, 
-                predictions + mae,
-                alpha=0.2, color='orange')
-plt.title('Comparaison des prédictions vs Réalité')
-plt.xlabel('Index temporel')
+# Fréquentation par jour et météo
+ax1 = plt.subplot(2, 2, 1)
+meteo_order = ['Clair', 'Nuageux', 'Très nuageux', 'Pluie']
+sns.boxplot(data=daily, x='jour_semaine', y='total_repas', hue='meteo', 
+            order=weekday_order, hue_order=meteo_order, palette='pastel')
+plt.title('Fréquentation par jour et conditions météo')
 plt.ylabel('Nombre de repas')
-plt.legend()
-plt.grid(True)
-plt.savefig('predictions_model.png', dpi=300)
+plt.xlabel('Jour de la semaine')
+plt.xticks(range(5), weekday_fr)
+plt.grid(True, axis='y', alpha=0.3)
+
+# Impact de la température par jour
+ax2 = plt.subplot(2, 2, 2)
+sns.scatterplot(data=daily, x='temperature_moy', y='total_repas', 
+                hue='jour_semaine', hue_order=weekday_order, 
+                palette='viridis', alpha=0.7)
+plt.title('Impact de la température selon le jour')
+plt.ylabel('Nombre de repas')
+plt.xlabel('Température moyenne (°C)')
+plt.grid(True, alpha=0.3)
+
+# Interaction jour-météo (heatmap)
+pivot_data = daily.pivot_table(index='jour_semaine', columns='meteo', 
+                              values='total_repas', aggfunc='mean')
+pivot_data = pivot_data.reindex(weekday_order)[meteo_order]
+
+ax3 = plt.subplot(2, 2, 3)
+sns.heatmap(pivot_data, annot=True, fmt=".0f", cmap='coolwarm', 
+            linewidths=.5, cbar_kws={'label': 'Repas moyens'})
+plt.title('Interaction jour de semaine et météo')
+plt.xlabel('Conditions météo')
+plt.ylabel('Jour de semaine')
+plt.xticks(rotation=45)
+plt.yticks(range(5), weekday_fr, rotation=0)
+
+# Évolution hebdomadaire
+ax4 = plt.subplot(2, 2, 4)
+week_avg = df.groupby(['day_of_the_week', 'month'])['lunch'].mean().reset_index()
+sns.lineplot(data=week_avg, x='month', y='lunch', hue='day_of_the_week', 
+             hue_order=weekday_order, palette='viridis', marker='o')
+plt.title('Évolution mensuelle par jour de semaine')
+plt.ylabel('Taux de présence moyen')
+plt.xlabel('Mois')
+plt.xticks(range(1,13), ['Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sep','Oct','Nov','Déc'])
+plt.grid(True, alpha=0.3)
+plt.legend(title='Jour', labels=weekday_fr)
+
+plt.tight_layout()
+plt.savefig('jour_meteo.png', dpi=300)
 plt.show()
 
-# 9. Feature importance
-importance = model.named_steps['randomforestregressor'].feature_importances_
-features = X.columns
-plt.barh(features, importance)
-plt.title('Importance des variables dans la prédiction')
-plt.tight_layout()
-plt.savefig('feature_importance.png', dpi=300)
+# 5. Analyse des habitudes des employés
+plt.figure(figsize=(16, 12))
 
-# 10. Recommandations pour la production
-print("\nRecommandations opérationnelles:")
-print(f"- Préparer en moyenne {daily_data['total_repas'].mean():.0f} plats journaliers")
-print("- Réduire de 15% les préparations le vendredi")
-print("- Augmenter de 20% les stocks les jours de pluie")
-print("- Prévoir un buffer de ±{:.0f} repas autour des prévisions".format(mae))
+# Fréquence de visite par employé
+employee_visits = df.groupby('UID')['lunch'].agg(['sum','count'])
+employee_visits['freq'] = employee_visits['sum'] / employee_visits['count']
+
+ax1 = plt.subplot(2, 2, 1)
+sns.histplot(data=employee_visits, x='freq', bins=20, kde=True, color='purple')
+plt.title('Distribution de la fréquence de visite des employés')
+plt.xlabel('Fréquence de visite (jours présents/jours travaillés)')
+plt.ylabel('Nombre d\'employés')
+plt.grid(True, alpha=0.3)
+
+# Segmentation des employés
+bins = [0, 0.2, 0.6, 1.0]
+labels = ['Occasionnels (<20%)', 'Réguliers (20-60%)', 'Fidèles (>60%)']
+employee_visits['segment'] = pd.cut(employee_visits['freq'], bins=bins, labels=labels)
+
+ax2 = plt.subplot(2, 2, 2)
+employee_visits['segment'].value_counts().plot.pie(autopct='%1.1f%%', 
+                                                  colors=['lightblue', 'steelblue', 'darkblue'])
+plt.title('Segmentation des employés par fidélité')
+plt.ylabel('')
+
+# Comportement hebdomadaire par segment
+segment_days = df.merge(employee_visits.reset_index()[['UID','segment']], on='UID')
+segment_analysis = segment_days.groupby(['segment', 'day_of_the_week'])['lunch'].mean().reset_index()
+
+ax3 = plt.subplot(2, 2, 3)
+sns.barplot(data=segment_analysis, x='segment', y='lunch', hue='day_of_the_week', 
+            hue_order=weekday_order, palette='viridis')
+plt.title('Fréquentation par segment et jour de semaine')
+plt.ylabel('Taux de présence moyen')
+plt.xlabel('Segment d\'employés')
+plt.legend(title='Jour', labels=weekday_fr)
+plt.grid(True, axis='y', alpha=0.3)
+
+# Impact météo par segment
+segment_meteo = segment_days.groupby(['segment', 'meteo'])['lunch'].mean().reset_index()
+
+ax4 = plt.subplot(2, 2, 4)
+sns.barplot(data=segment_meteo, x='segment', y='lunch', hue='meteo', 
+            hue_order=meteo_order, palette='pastel')
+plt.title('Sensibilité météo par segment')
+plt.ylabel('Taux de présence moyen')
+plt.xlabel('Segment d\'employés')
+plt.grid(True, axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('analyse_employes.png', dpi=300)
+plt.show()
+
+# 6. Analyse des surplus et pénuries
+daily['ecart'] = daily['total_repas'] - daily['total_repas'].mean()
+daily['type_jour'] = daily['jour_semaine'] + '_' + daily['meteo'].str[0]
+
+plt.figure(figsize=(14, 8))
+sns.boxplot(data=daily, x='type_jour', y='ecart', order=sorted(daily['type_jour'].unique()), 
+            palette='coolwarm')
+plt.axhline(0, color='r', linestyle='--')
+plt.title('Écarts à la moyenne par type de jour')
+plt.ylabel('Écart au nombre moyen de repas')
+plt.xlabel('Combinaison jour/météo')
+plt.xticks(rotation=45)
+plt.grid(True, axis='y', alpha=0.3)
+plt.tight_layout()
+plt.savefig('ecarts_jours.png', dpi=300)
+plt.show()
